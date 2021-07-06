@@ -29,6 +29,7 @@
 # "protocol.comment(print(used_tipracks, "tipracks have been used.")" comments are for the debugging process
 from opentrons import protocol_api
 from opentrons.types import Point
+import random
 
 metadata = {
     "apiLevel": "2.8",
@@ -45,17 +46,22 @@ def run(protocol: protocol_api.ProtocolContext):
     lysate_mix_reps = 25
     # lysate and bead volumes
     [v_sample, v_beads] = [50, 20]
+    # ethanol volume in uL
+    v_etoh = 120
     # final elution buffer
     v_EB = 50
     # binding time in minutes
-    b_binding_time = 10
-    m_binding_time = 5
+    bead_binding_time = 10
+    mag_binding_time = 5
+    bead_detaching_time_in_s = 5
     # beads
     bead_tube = protocol.load_labware(
         "opentrons_24_tuberack_eppendorf\
         _1.5ml_safelock_snapcap",
         8,
     )["A1"]
+    # ethanol
+    reagents = protocol.load_labware("nest_12_reservoir_15ml", 2)
     # tip racks
     n_tiprack = 3
 
@@ -85,7 +91,7 @@ def run(protocol: protocol_api.ProtocolContext):
     tip300_count = 0
     tip300_max = 12 * n_tiprack
 
-    def multi_pick_up():
+    def multi_tip_pick_up():
         """Refillable tip pickup.
         If no tips left, protocol will
         pause and ask for refill."""
@@ -149,8 +155,8 @@ def run(protocol: protocol_api.ProtocolContext):
 
     # step 4 bead binding
     protocol.delay(
-        minutes=b_binding_time,
-        msg=f"RT: {str(b_binding_time)} minutes for\
+        minutes=bead_binding_time,
+        msg=f"RT: {str(bead_binding_time)} minutes for\
              DNA binding to beads.",
     )
     protocol.pause(
@@ -161,8 +167,8 @@ def run(protocol: protocol_api.ProtocolContext):
     # step 5 engage magnet
     mag_mod.engage(height=15)
     protocol_api.delay(
-        minutes=m_binding_time,
-        msg=f"Wait {str(m_binding_time)} minutes for\
+        minutes=mag_binding_time,
+        msg=f"Wait {str(mag_binding_time)} minutes for\
              beads to bind to magnet.Make sure beads\
                   are visibly sticking to the wall!",
     )
@@ -173,13 +179,81 @@ def run(protocol: protocol_api.ProtocolContext):
     multi_300.flow_rate.dispense = 300
     multi_300.well_bottom_clearance.dispense = 5
     multi_300.well_bottom_clearance.aspirate = 1.7
+    x_left = -1.1
+    x_right = 1.1
     for i in range(column_no):
-        multi_pick_up()
+        multi_tip_pick_up()
         # offset x location dependening on magnet location
-        x = 1.1 if (i + 1) % 2 == 0 else -1.1
-        multi_300.transfer(v_asp_sn, r_plate.columns()[i].move(Point(x=x)))
-
+        not_bead_loc = x_right if (i + 1) % 2 == 0 else x_left
+        multi_300.transfer(
+            v_asp_sn,
+            r_plate.columns()[i].move(Point(x=not_bead_loc)),
+            pre_l_plate.columns()[i],
+            air_gap=20,
+        )
+        multi_300.drop_tip()
     # step 7 disengage magnet
     mag_mod.disengage()
+    multi_300.flow_rate.aspirate = 200
+    multi_300.flow_rate.dispense = 300
+    multi_300.well_bottom_clearance.dispense = 6
 
-    # step 8: ethanol wash
+    # step 8: ethanol wash. step 9: mix
+    def mix_at_custom_speed_at_random_offsets(
+        reps,  # repetitions
+        vol,  # volumes
+        dest,  # destination point
+        asp_r,  # aspirationrate
+        disp_r=None,  # dispense rate defaults to equal asp_r
+        x_limits=(-1.1, 1.1),  # min-max pipette locations
+        y_limits=(-0.8, 0.8),
+        z_limits=(-1, 3),
+    ):
+        """Wrapper of mixing functionality.
+        We customize aspiration and dispense speeds.
+        reps: repetitions
+        vol: volume of mixing
+        dest: destination of mixing
+        asp_r,disp_r: multiplication factor of base flow rate. If 4, then flow rate will be 4 times base flow rate
+        x_limits, y_limits, z_limits: range of locations for pipette within well"""
+        if not disp_r:
+            disp_r = asp_r
+        for i in range(reps):
+            x = round(random.uniform(x_limits[0], x_limits[1]), 1)
+            y = round(random.uniform(y_limits[0], y_limits[1]), 1)
+            z = round(random.uniform(z_limits[0], z_limits[1]), 1)
+            offset = Point(x, y, z)
+            multi_300.aspirate(vol, dest.move(offset), asp_r, disp_r)
+            multi_300.dispense(vol, dest.move(offset), asp_r, disp_r)
+
+    for i in range(column_no):
+        multi_tip_pick_up()
+        # transfer ethanol to reaction plate
+        multi_300.transfer(
+            v_etoh, reagents["A2"], r_plate.columns()[i], rate=0.5, air_gap=30
+        )
+        bead_location = x_right if (i + 1) % 2 == 0 else x_right
+        dest = r_plate.columns()[i]
+        # mix at bead pellet
+        mix_at_custom_speed_at_random_offsets(
+            5,  # repetitions
+            v_etoh,  # volume
+            dest,  # destination
+            5,  # times base flow rate
+            x_limits=(bead_location, bead_location),  # focus on bead pellet
+        )
+        # generalized mix
+        mix_at_custom_speed_at_random_offsets(10, v_etoh, dest, 4)
+        protocol.delay(seconds=2)
+        multi_300.blow_out(dest.top(z=-1))
+        multi_300.return_tip()
+    # step 10 engage magnet
+    mag_mod.engage(height=12)
+
+    # step 11
+    protocol.delay(
+        seconds=bead_detaching_time_in_s,
+        msg="Turn on heatblock at 60°C.\
+             Wait until magnet acts properly.\
+             make sure it is sticking to wall, or pause manually. If needed remove tips from trash.",
+    )
