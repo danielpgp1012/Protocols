@@ -77,15 +77,15 @@ def run(protocol: protocol_api.ProtocolContext):
     s_tiprack = protocol.load_labware("opentrons_96_tiprack_300ul", 9)
 
     # reaction plate (single one that will be moved by user)
-    pre_l_plate = protocol.load_labware("biorad_96_wellplate_200ul_pcr", 5)
+    pre_l_plate = protocol.load_labware("96w_pcr_plate2", 5)
     mag_mod: protocol_api.MagneticModuleContext = protocol.load_module(
         "magnetic module", 1
     )
-    r_plate = mag_mod.load_labware("opentrons_96_tiprack_300ul")
+    r_plate = mag_mod.load_labware("96w_pcr_plate2")
 
     # pipettes
     # multi-channel
-    multi_300: protocol_api.InstrumentContext = protocol.load_labware(
+    multi_300: protocol_api.InstrumentContext = protocol.load_instrument(
         "p300_multi_gen2", mount="right", tip_racks=m_tipacks
     )
     tip300_count = 0
@@ -148,6 +148,7 @@ def run(protocol: protocol_api.ProtocolContext):
         multi_300.mix(
             lysate_mix_reps,
             min((v_beads + v_sample) * 0.7, multi_300.max_volume),
+            pre_l_plate.columns()[i][0],
         )
         multi_300.blow_out()
         multi_300.return_tip()
